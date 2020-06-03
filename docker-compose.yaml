@@ -1,5 +1,57 @@
 version: "3.4"
+
+x-common-config: &common_config
+  image: squadproject/squad:1.14
+  volumes:
+    - home:/app
+  environment:
+    - SQUAD_LOG_LEVEL=DEBUG
+    - SQUAD_CELERY_BROKER_URL=amqp://rabbitmq
+    - XDG_DATA_HOME=/app
+
 services:
+  rabbitmq:
+    container_name: rabbitmq
+    image: rabbitmq
+
+  squad-dbmigrate:
+    container_name: squad-dbmigrate
+    <<: *common_config
+    command: squad-admin migrate
+    deploy:
+      restart_policy:
+        condition: none
+
+  squad-web:
+    container_name: squad-web
+    <<: *common_config
+    command: squad --fast --bind 0.0.0.0:8000
+    ports:
+      - '8000:8000'
+    depends_on:
+    - lava-server
+
+  squad-worker:
+    container_name: squad-worker
+    <<: *common_config
+    command: squad-worker
+    depends_on:
+    - lava-server
+
+  squad-listener:
+    container_name: squad-listener
+    <<: *common_config
+    command: squad-listener
+    depends_on:
+    - lava-server
+
+  squad-scheduler:
+    container_name: squad-scheduler
+    <<: *common_config
+    command: squad-scheduler
+    depends_on:
+    - lava-server
+
   db:
     image: ${DC_POSTGRES_IMAGE}
     container_name: lava-server-db
@@ -8,52 +60,6 @@ services:
       POSTGRES_PASSWORD: lavaserverdbpass
     volumes:
     - db-data:/var/lib/postgresql/data
-    restart: unless-stopped
-
-  lava-logs:
-    container_name: lava-logs
-    image: ${DC_SERVER_IMAGE}
-    volumes:
-    - joboutput:/var/lib/lava-server/default/media/job-output
-    - ./overlays/lava-server/etc/lava-server/instance.conf:/etc/lava-server/instance.conf:ro
-    - ./overlays/lava-server/etc/lava-server/settings.conf:/etc/lava-server/settings.conf:ro
-    - ./overlays/lava-server/etc/lava-server/lava-logs:/etc/lava-server/lava-logs:ro
-    depends_on:
-    - db
-    environment:
-      SERVICES: "lava-logs"
-    ports:
-    - 5555:5555
-    restart: unless-stopped
-    stop_grace_period: 20s
-
-  lava-master:
-    container_name: lava-master
-    image: ${DC_SERVER_IMAGE}
-    volumes:
-    - devices:/etc/lava-server/dispatcher-config/devices:ro
-    - health-checks:/etc/lava-server/dispatcher-config/health-checks:ro
-    - ./overlays/lava-server/etc/lava-server/instance.conf:/etc/lava-server/instance.conf:ro
-    - ./overlays/lava-server/etc/lava-server/settings.conf:/etc/lava-server/settings.conf:ro
-    - ./overlays/lava-server/etc/lava-server/lava-master:/etc/lava-server/lava-master:ro
-    depends_on:
-    - db
-    environment:
-      SERVICES: "lava-master"
-    ports:
-    - 5556:5556
-    restart: unless-stopped
-
-  lava-publisher:
-    container_name: lava-publisher
-    image: ${DC_SERVER_IMAGE}
-    volumes:
-    - ./overlays/lava-server/etc/lava-server/instance.conf:/etc/lava-server/instance.conf:ro
-    - ./overlays/lava-publisher/etc/lava-server/settings.conf:/etc/lava-server/settings.conf:ro
-    environment:
-      SERVICES: "lava-publisher"
-    ports:
-    - 5500:5500
     restart: unless-stopped
 
   lava-server:
@@ -65,26 +71,16 @@ services:
     - joboutput:/var/lib/lava-server/default/media/job-output
     - ./overlays/lava-server/etc/lava-server/instance.conf:/etc/lava-server/instance.conf:ro
     - ./overlays/lava-server/etc/lava-server/settings.conf:/etc/lava-server/settings.conf:ro
-      # Example for development
-      # If you wanted to point to a local git checkout of lava for development
-      # of lava_dispatcher, you can uncomment out the lines below and
-      # set the 'source:' to point to where your lava checkout is
-      # The example assumes its relative in ../lava
-      #
-#    - type: bind
-#      source: ../lava/lava_server
-#      target: /usr/lib/python3/dist-packages/lava_server
-#    - type: bind
-#      source: ../lava/lava_scheduler_app
-#      target: /usr/lib/python3/dist-packages/lava_scheduler_app
-#    - type: bind
-#      source: ../lava/lava_common
-#      target: /usr/lib/python3/dist-packages/lava_common
+    - ./overlays/lava-server/etc/lava-server/lava-master:/etc/lava-server/lava-master:ro
     depends_on:
     - db
     environment:
-      SERVICES: "gunicorn"
+      SERVICES: "lava-logs lava-master lava-publisher gunicorn"
       BIND: "--bind lava-server:8000"
+    ports:
+    - 5500:5500
+    - 5556:5556
+    - 5555:5555
     restart: unless-stopped
 
   apache2:
@@ -117,26 +113,14 @@ services:
     - SYS_ADMIN # needed for usb mass storage
     environment:
       DISPATCHER_HOSTNAME: "--hostname=lava-dispatcher"
-      LOGGER_URL: "tcp://lava-logs:5555"
-      MASTER_URL: "tcp://lava-master:5556"
+      LOGGER_URL: "tcp://lava-server:5555"
+      MASTER_URL: "tcp://lava-server:5556"
     volumes:
     - /var/run/docker.sock:/var/run/docker.sock # allow to use docker inside this container
     - /run/udev/control:/run/udev/control:ro # libudev expects it for udev events
     - /boot:/boot:ro
     - /lib/modules:/lib/modules:ro
     - ./test-images:/test-images:ro
-      # Example for development
-      # If you wanted to point to a local git checkout of lava for development
-      # of lava_dispatcher, you can uncomment out the lines below and
-      # set the 'source:' to point to where your lava checkout is
-      # The example assumes its relative in ../lava
-      #
-#    - type: bind
-#      source: ../lava/lava_dispatcher
-#      target: /usr/lib/python3/dist-packages/lava_dispatcher
-#    - type: bind
-#      source: ../lava/lava_common
-#      target: /usr/lib/python3/dist-packages/lava_common
 
   ser2net:
     container_name: lava-ser2net
@@ -156,3 +140,5 @@ volumes:
     name: lava-server-health-checks
   joboutput:
     name: lava-server-joboutput
+  home:
+    name: squad-home
